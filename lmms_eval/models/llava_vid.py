@@ -3,6 +3,7 @@ import math
 import os
 from datetime import timedelta
 from typing import List, Optional, Tuple, Union
+from pathlib import Path
 
 import numpy as np
 import torch
@@ -107,6 +108,11 @@ class LlavaVid(lmms):
         add_time_instruction: bool = False,
         add_faster_video: bool = False,
         faster_token_stride: int = 10,
+        load_8bit: bool = False,   
+        load_4bit: bool = False,
+        frame_selection: bool = False,
+        sim_type: str = "top",
+        selection_dir: str = None,
         **kwargs,
     ) -> None:
         super().__init__()
@@ -139,6 +145,11 @@ class LlavaVid(lmms):
         self.delay_load = delay_load
         self.force_sample = force_sample
         self.add_time_instruction = add_time_instruction
+        self.load_8bit = load_8bit
+        self.load_4bit = load_4bit
+        self.frame_selection = frame_selection
+        self.sim_type = sim_type
+        self.selection_dir = Path(selection_dir)
         print("force sample:", self.force_sample)
         # self.add_faster_video = add_faster_video
         # self.faster_token_stride = faster_token_stride
@@ -171,10 +182,10 @@ class LlavaVid(lmms):
                     overwrite_config["tokenizer_model_max_length"] = 4096 * scaling_factor
 
             self._tokenizer, self._model, self._image_processor, self._max_length = load_pretrained_model(
-                pretrained, None, self.model_name, device_map=self.device_map, torch_dtype=self.torch_dtype, overwrite_config=overwrite_config, attn_implementation=attn_implementation
+                pretrained, None, self.model_name, load_8bit=self.load_8bit, device_map=self.device_map, torch_dtype=self.torch_dtype, overwrite_config=overwrite_config, attn_implementation=attn_implementation
             )
         else:
-            self._tokenizer, self._model, self._image_processor, self._max_length = load_pretrained_model(pretrained, None, self.model_name, device_map=self.device_map, torch_dtype=self.torch_dtype, attn_implementation=attn_implementation)
+            self._tokenizer, self._model, self._image_processor, self._max_length = load_pretrained_model(pretrained, None, self.model_name, load_8bit=self.load_8bit, device_map=self.device_map, torch_dtype=self.torch_dtype, attn_implementation=attn_implementation)
 
         self._config = self._model.config
 
@@ -221,7 +232,8 @@ class LlavaVid(lmms):
             self._world_size = 1
         else:
             eval_logger.info(f"Using single device: {self._device}")
-            self.model.to(self._device)
+            if not getattr(self.model, 'is_loaded_in_8bit', False) and not getattr(self.model, 'is_loaded_in_4bit', False):
+                self.model.to(self._device)
             self._rank = 0
             self._world_size = 1
 
@@ -309,7 +321,7 @@ class LlavaVid(lmms):
                 print(f"Failed to read frame at path: {frame_path}")
         return video
 
-    def load_video(self, video_path, max_frames_num, fps, force_sample=False):
+    def load_video(self, video_path, max_frames_num, fps, qid=None, sim_type=None, selection_dir=None, frame_selection=False, force_sample=False):
         if max_frames_num == 0:
             return np.zeros((1, 336, 336, 3))
         vr = VideoReader(video_path, ctx=cpu(0), num_threads=1)
@@ -318,11 +330,22 @@ class LlavaVid(lmms):
         fps = round(vr.get_avg_fps() / fps)
         frame_idx = [i for i in range(0, len(vr), fps)]
         frame_time = [i / fps for i in frame_idx]
-        if len(frame_idx) > max_frames_num or force_sample:
-            sample_fps = max_frames_num
-            uniform_sampled_frames = np.linspace(0, total_frame_num - 1, sample_fps, dtype=int)
-            frame_idx = uniform_sampled_frames.tolist()
-            frame_time = [i / vr.get_avg_fps() for i in frame_idx]
+        if frame_selection:
+            p_sim = selection_dir / f"{qid}.pt"
+            sim = torch.load(p_sim)
+            
+            if sim_type == "top":
+                topk = torch.topk(sim, k=max_frames_num, dim=0, largest=True, sorted=True)
+                frame_idx = sorted(topk.indices.tolist())
+            elif sim_type == "bottom":
+                bottomk = torch.topk(-sim, k=max_frames_num, dim=0, largest=True, sorted=True)
+                frame_idx = sorted(bottomk.indices.tolist())
+        else:
+            if len(frame_idx) > max_frames_num or force_sample:
+                sample_fps = max_frames_num
+                uniform_sampled_frames = np.linspace(0, total_frame_num - 1, sample_fps, dtype=int)
+                frame_idx = uniform_sampled_frames.tolist()
+                frame_time = [i / vr.get_avg_fps() for i in frame_idx]
         frame_time = ",".join([f"{i:.2f}s" for i in frame_time])
         spare_frames = vr.get_batch(frame_idx).asnumpy()
         # import pdb;pdb.set_trace()
@@ -405,7 +428,7 @@ class LlavaVid(lmms):
         res = []
         pbar = tqdm(total=len(requests), disable=(self.rank != 0), desc="Model Responding")
 
-        for contexts, gen_kwargs, doc_to_visual, doc_id, task, split in [reg.args for reg in requests]:
+        for contexts, gen_kwargs, doc_to_visual, doc_id, task, split, qid in [reg.args for reg in requests]:
             # if self.task_dict[task][split][doc_id]["duration"] != "short":
             # # if doc_id != 112:
             #     # import pdb;pdb.set_trace()
@@ -424,7 +447,7 @@ class LlavaVid(lmms):
                 # for visual in visuals:
                 if len(visuals) == 1:
                     if self.video_decode_backend == "decord":
-                        video, frame_time, video_time = self.load_video(visuals[0], self.max_frames_num, self.fps, force_sample=self.force_sample)
+                        video, frame_time, video_time = self.load_video(visuals[0], self.max_frames_num, self.fps, qid, sim_type=self.sim_type, selection_dir=self.selection_dir, frame_selection=self.frame_selection, force_sample=self.force_sample)
                     elif self.video_decode_backend == "pyav":
                         video, frame_time, video_time = read_video_pyav(visuals[0], self.max_frames_num, self.fps, force_sample=self.force_sample)
                     elif self.video_decode_backend == "image":

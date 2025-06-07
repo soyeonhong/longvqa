@@ -1,0 +1,20 @@
+dataset_path: /local_datasets/HourVideo
+dataset_kwargs:
+  data_files:
+    validation: /data/soyeon/longvqa/repos/lmms-eval/data/hourvideo_val_flat.json
+    # validation: /data/soyeon/longvqa/repos/lmms-eval/data/hourvideo_val_subset.json
+task: hourvideo_val
+test_split: validation
+doc_to_visual: !function utils.hourvideo_doc_to_visual_v
+doc_to_text: !function utils.hourvideo_doc_to_text
+doc_to_target: "correct_choice"
+process_results: !function utils.hourvideo_process_results
+metric_list:
+  - metric: hourvideo_acc
+    aggregation: !function utils.hourvideo_aggregate_results
+    higher_is_better: true
+
+lmms_eval_specific_kwargs:
+  default:
+    pre_prompt: ""
+    post_prompt: "Answer with the option's letter from the given choices directly.\n"

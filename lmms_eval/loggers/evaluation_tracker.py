@@ -1,6 +1,7 @@
 # code is adapted from https://github.com/EleutherAI/lm-evaluation-harness/blob/main/lm_eval/loggers/evaluation_tracker.py
 import json
 import os
+import subprocess
 import re
 import time
 from collections import defaultdict
@@ -166,6 +167,14 @@ class EvaluationTracker:
         self.details_repo_private = f"{hub_results_org}/{details_repo_name}-private"
         self.results_repo = f"{hub_results_org}/{results_repo_name}"
         self.results_repo_private = f"{hub_results_org}/{results_repo_name}-private"
+        
+    def write_batch_script(self, jid):
+        p_root = Path(self.output_path if self.output_path else Path.cwd())
+        p_root.mkdir(parents=True, exist_ok=True)
+        p_script = p_root / f"slurm-{jid}.sh"
+        command = f"scontrol write batch_script {jid} {p_script}"
+        print(f'Writing batch script to {p_script}')
+        subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, shell=True)
 
     def save_results_aggregated(
         self,

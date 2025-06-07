@@ -23,6 +23,8 @@ from lmms_eval.api.instance import Instance
 from lmms_eval.api.model import lmms
 from lmms_eval.api.registry import register_model
 from lmms_eval.models.model_utils.load_video import read_video_pyav
+from pathlib import Path
+from scipy.signal import medfilt
 
 # Suppress warnings
 warnings.filterwarnings("ignore")
@@ -85,6 +87,10 @@ class Llava_OneVision(lmms):
         mm_spatial_pool_mode: Optional[str] = "bilinear",
         token_strategy: Optional[str] = "single",  # could be "single" or "multiple", "multiple" denotes adding multiple <image> tokens for each frame
         video_decode_backend: str = "decord",
+        frame_selection: bool = False,
+        sim_type: str = "top",
+        selection_dir: str = None,
+        fps: int = 1,
         **kwargs,
     ) -> None:
         super().__init__()
@@ -120,6 +126,13 @@ class Llava_OneVision(lmms):
         self.mm_spatial_pool_stride = mm_spatial_pool_stride
         self.mm_spatial_pool_mode = mm_spatial_pool_mode
         self.video_decode_backend = video_decode_backend
+        self.frame_selection = frame_selection
+        self.sim_type = sim_type
+        if selection_dir is None:
+            self.selection_dir = None
+        else:
+            self.selection_dir = Path(selection_dir)
+        self.fps = fps
 
         overwrite_config = {}
         overwrite_config["mm_spatial_pool_stride"] = self.mm_spatial_pool_stride
@@ -371,14 +384,27 @@ class Llava_OneVision(lmms):
                     new_list.append(j)
         return new_list
 
-    def load_video(self, video_path, max_frames_num):
+    def load_video(self, video_path, max_frames_num, fps = 1, qid=None, sim_type=None, selection_dir=None, frame_selection=False):
         if type(video_path) == str:
-            vr = VideoReader(video_path, ctx=cpu(0))
+            vr = VideoReader(video_path, ctx=cpu(0), num_threads=1)
         else:
-            vr = VideoReader(video_path[0], ctx=cpu(0))
-        total_frame_num = len(vr)
-        uniform_sampled_frames = np.linspace(0, total_frame_num - 1, max_frames_num, dtype=int)
-        frame_idx = uniform_sampled_frames.tolist()
+            vr = VideoReader(video_path[0], ctx=cpu(0), num_threads=1)
+            
+        if frame_selection:
+            p_sim = selection_dir / f"{qid[0]}.pt"
+            sim = torch.load(p_sim)
+            smooted_sim = torch.tensor(medfilt(sim, kernel_size=11))
+            
+            if sim_type == "top":
+                topk = torch.topk(smooted_sim, k=max_frames_num, dim=0, largest=True, sorted=True)
+                frame_idx = [int(vr.get_avg_fps() * idx) for idx in sorted(topk.indices.tolist())]
+            elif sim_type == "bottom":
+                bottomk = torch.topk(smooted_sim, k=max_frames_num, dim=0, largest=False, sorted=True)
+                frame_idx = [int(vr.get_avg_fps() * idx) for idx in sorted(bottomk.indices.tolist())]
+        else:
+            total_frame_num = len(vr)
+            uniform_sampled_frames = np.linspace(0, total_frame_num - 1, max_frames_num, dtype=int)
+            frame_idx = uniform_sampled_frames.tolist()
         spare_frames = vr.get_batch(frame_idx).asnumpy()
         return spare_frames  # (frames, height, width, channels)
 
@@ -407,7 +433,7 @@ class Llava_OneVision(lmms):
         origin_image_aspect_ratio = getattr(self._config, "image_aspect_ratio", None)
 
         for chunk in chunks:
-            batched_contexts, all_gen_kwargs, batched_doc_to_visual, batched_doc_id, batched_task, batched_split = zip(*chunk)
+            batched_contexts, all_gen_kwargs, batched_doc_to_visual, batched_doc_id, batched_task, batched_split, qid = zip(*chunk)
             task = batched_task[0]
             split = batched_split[0]
             batched_visuals = [batched_doc_to_visual[0](self.task_dict[task][split][ids]) for ids in batched_doc_id]  # [B, N]
@@ -465,7 +491,7 @@ class Llava_OneVision(lmms):
                         image_tensor = []
                         try:
                             if self.video_decode_backend == "decord":
-                                frames = self.load_video(visual, self.max_frames_num)
+                                frames = self.load_video(visual, self.max_frames_num, self.fps, qid, sim_type=self.sim_type, selection_dir=self.selection_dir, frame_selection=self.frame_selection, )
                             elif self.video_decode_backend == "pyav":
                                 frames = read_video_pyav(visual[0], num_frm=self.max_frames_num)
                             frames = self._image_processor.preprocess(frames, return_tensors="pt")["pixel_values"].half().cuda()

@@ -1406,9 +1406,11 @@ class ConfigurableTask(Task):
 
     def construct_requests(self, doc_id: int, ctx: str, **kwargs) -> Union[List[Instance], Instance]:
         split = kwargs.get("metadata").get("split")
+        doc = self.dataset[split][doc_id]
+        qid = doc.get("qid", None)
         # kwargs.pop("split")
         if self.OUTPUT_TYPE == "loglikelihood":
-            arguments = (ctx, self.doc_to_target, self.doc_to_visual, doc_id, self.config.task, split)
+            arguments = (ctx, self.doc_to_target, self.doc_to_visual, doc_id, self.config.task, split, qid)
         elif self.OUTPUT_TYPE == "multiple_choice":
             doc = self.dataset[split][doc_id]
             choices = self.doc_to_choice(doc)
@@ -1416,10 +1418,10 @@ class ConfigurableTask(Task):
             if self.multiple_input:
                 # If there are multiple inputs, choices are placed in the ctx
                 cont = self.doc_to_target(doc)
-                arguments = [(ctx, f"{target_delimiter}{cont}", self.doc_to_visual, doc_id, self.config.task, split) for ctx in choices]
+                arguments = [(ctx, f"{target_delimiter}{cont}", self.doc_to_visual, doc_id, self.config.task, split, qid) for ctx in choices]
             else:
                 # Otherwise they are placed in the continuation
-                arguments = [(ctx, f"{target_delimiter}{cont}", self.doc_to_visual, doc_id, self.config.task, split) for cont in choices]
+                arguments = [(ctx, f"{target_delimiter}{cont}", self.doc_to_visual, doc_id, self.config.task, split, qid) for cont in choices]
             request_list = [
                 Instance(
                     request_type="loglikelihood",
@@ -1453,9 +1455,9 @@ class ConfigurableTask(Task):
             return request_list
 
         elif self.OUTPUT_TYPE == "generate_until":
-            arguments = (ctx, copy.deepcopy(self.config.generation_kwargs), self.doc_to_visual, doc_id, self.config.task, split)
+            arguments = (ctx, copy.deepcopy(self.config.generation_kwargs), self.doc_to_visual, doc_id, self.config.task, split, qid)
         elif self.OUTPUT_TYPE == "generate_until_multi_round":
-            arguments = (ctx, copy.deepcopy(self.config.generation_kwargs), self.doc_to_visual, partial(self.config.doc_to_text, lmms_eval_specific_kwargs=self.lmms_eval_specific_kwargs), doc_id, self.config.task, split)
+            arguments = (ctx, copy.deepcopy(self.config.generation_kwargs), self.doc_to_visual, partial(self.config.doc_to_text, lmms_eval_specific_kwargs=self.lmms_eval_specific_kwargs), doc_id, self.config.task, split, qid)
         return Instance(request_type=self.OUTPUT_TYPE, arguments=arguments, idx=0, **kwargs)
 
     # TODO: we add a full_docs interface here for some evaluations that needs to access the full datasets during process_results function. we may have better ways to handle this.

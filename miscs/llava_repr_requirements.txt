@@ -20,7 +20,6 @@ PyYAML==6.0.1
 Requests==2.31.0
 sacrebleu==2.4.0
 scikit_learn==1.2.2
-sentencepiece==0.1.99
 setuptools==68.2.2
 sglang==0.1.12
 shortuuid==1.0.12

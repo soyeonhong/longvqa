@@ -1,3 +1,6 @@
+from dotenv import load_dotenv
+load_dotenv(dotenv_path='/data/soyeon/longvqa/repos/lmms-eval/.env')
+
 import argparse
 import datetime
 import importlib
@@ -370,7 +373,10 @@ def cli_evaluate_single(args: Union[argparse.Namespace, None] = None) -> None:
 
     # update the evaluation tracker args with the output path and the HF token
     if args.output_path:
-        args.hf_hub_log_args += f",output_path={args.output_path}"
+        date_str = datetime.datetime.today().strftime("%Y-%m-%d")
+        job_id = os.environ.get('SLURM_JOB_ID')
+        p_out = Path(args.output_path) / date_str / job_id
+        args.hf_hub_log_args += f",output_path={str(p_out)}"
     if os.environ.get("HF_TOKEN", None):
         args.hf_hub_log_args += f",token={os.environ.get('HF_TOKEN')}"
 
@@ -378,6 +384,8 @@ def cli_evaluate_single(args: Union[argparse.Namespace, None] = None) -> None:
     eval_logger.info(f"Evaluation tracker args: {evaluation_tracker_args}")
 
     evaluation_tracker = EvaluationTracker(**evaluation_tracker_args)
+    
+    evaluation_tracker.write_batch_script(job_id)
 
     if args.predict_only:
         args.log_samples = True
