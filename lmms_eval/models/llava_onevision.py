@@ -91,6 +91,8 @@ class Llava_OneVision(lmms):
         sim_type: str = "top",
         selection_dir: str = None,
         fps: int = 1,
+        use_cls: Optional[bool] = False,
+        cls_dir: Optional[str] = None,
         **kwargs,
     ) -> None:
         super().__init__()
@@ -133,6 +135,9 @@ class Llava_OneVision(lmms):
         else:
             self.selection_dir = Path(selection_dir)
         self.fps = fps
+        self.use_cls = use_cls
+        if self.use_cls and cls_dir is not None:
+            self.cls_dir = Path(cls_dir)
 
         overwrite_config = {}
         overwrite_config["mm_spatial_pool_stride"] = self.mm_spatial_pool_stride
@@ -489,16 +494,21 @@ class Llava_OneVision(lmms):
 
                     elif type(visual[0]) == str:  # For video task
                         image_tensor = []
-                        try:
-                            if self.video_decode_backend == "decord":
-                                frames = self.load_video(visual, self.max_frames_num, self.fps, qid, sim_type=self.sim_type, selection_dir=self.selection_dir, frame_selection=self.frame_selection, )
-                            elif self.video_decode_backend == "pyav":
-                                frames = read_video_pyav(visual[0], num_frm=self.max_frames_num)
-                            frames = self._image_processor.preprocess(frames, return_tensors="pt")["pixel_values"].half().cuda()
-                            image_tensor.append(frames)
-                        except Exception as e:
-                            eval_logger.error(f"Error {e} in loading video")
-                            image_tensor = None
+                        if self.use_cls:
+                            p_cls = self.cls_dir / f'{str(Path(visual[0]).stem)}.pt'
+                            vid_cls = torch.load(p_cls)
+                            image_tensor.append(vid_cls.to(self.device).half())
+                        else:
+                            try:
+                                if self.video_decode_backend == "decord":
+                                    frames = self.load_video(visual, self.max_frames_num, self.fps, qid, sim_type=self.sim_type, selection_dir=self.selection_dir, frame_selection=self.frame_selection, )
+                                elif self.video_decode_backend == "pyav":
+                                    frames = read_video_pyav(visual[0], num_frm=self.max_frames_num)
+                                frames = self._image_processor.preprocess(frames, return_tensors="pt")["pixel_values"].half().cuda()
+                                image_tensor.append(frames)
+                            except Exception as e:
+                                eval_logger.error(f"Error {e} in loading video")
+                                image_tensor = None
 
                         task_type = "video"
                         placeholder_count = len(frames) if self.token_strategy == "multiple" else 1
@@ -578,7 +588,7 @@ class Llava_OneVision(lmms):
                 gen_kwargs.pop("image_aspect_ratio")
             try:
                 with torch.inference_mode():
-                    cont = self.model.generate(input_ids, attention_mask=attention_masks, pad_token_id=pad_token_ids, images=image_tensor, use_cache=self.use_cache, **gen_kwargs)
+                    cont = self.model.generate(input_ids, attention_mask=attention_masks, pad_token_id=pad_token_ids, images=image_tensor, use_cls=self.use_cls, use_cache=self.use_cache, **gen_kwargs)
                     # cont = self.model.generate(qwen_input_ids, pad_token_id=pad_token_ids, images=image_tensor, use_cache=self.use_cache, **gen_kwargs)
 
                 text_outputs = self.tokenizer.batch_decode(cont, skip_special_tokens=True)
